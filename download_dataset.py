@@ -133,6 +133,8 @@ def main():
     for url in [MULTI_TURN_INSTRUCTION_URL, MULTI_TURN_MANIFEST_URL]:
         filename = url.split("/")[-1]
         target_file = IDX_PATH / filename
+        if target_file.exists():
+            continue
         print(f"Downloading {filename}...")
         download_file(url, target_file, is_external=False)
 
