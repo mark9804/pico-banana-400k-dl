@@ -28,13 +28,54 @@ rate_limit_lock = threading.Lock()
 last_external_request_time = 0.0
 EXTERNAL_REQUEST_INTERVAL = 0.5 # minimum wait time between external requests
 
-def log_error(url, reason):
+SKIPPED_URLS = set()
+LOGGED_URLS = set()
+
+if ERROR_FILE.exists():
+    with open(ERROR_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                url = data.get("url")
+                if not url:
+                    continue
+                LOGGED_URLS.add(url)
+                if data.get("code") in (404, 410):
+                    SKIPPED_URLS.add(url)
+            except json.JSONDecodeError:
+                pass
+
+def log_error(url, error_obj):
     with error_file_lock:
+        if url in LOGGED_URLS:
+            return
+            
+        code = getattr(error_obj, "code", None)
+        reason = getattr(error_obj, "reason", str(error_obj))
+        
+        # URLError's reason can be an exception itself
+        if isinstance(reason, Exception):
+            reason = str(reason)
+            
+        error_data = {"url": url, "reason": reason}
+        if code is not None:
+            error_data["code"] = code
+            
         with open(ERROR_FILE, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"url": url, "reason": str(reason)}) + "\n")
+            f.write(json.dumps(error_data) + "\n")
+            
+        LOGGED_URLS.add(url)
+        if code in (404, 410):
+            SKIPPED_URLS.add(url)
 
 def download_file(url: str, target_file: Path, is_external: bool = False, pbar_bytes=None):
     if target_file.exists():
+        return
+        
+    if url in SKIPPED_URLS:
         return
 
     tmp_file = target_file.parent / f"{target_file.name}.tmp"
@@ -70,7 +111,10 @@ def download_file(url: str, target_file: Path, is_external: bool = False, pbar_b
                 except OSError:
                     pass
             
-            if e.code == 429:
+            if e.code in (404, 410):
+                log_error(url, e)
+                return
+            elif e.code == 429:
                 # retry until non-429 error happens
                 backoff = 2 ** attempt
                 tqdm.write(f"HTTP 429 Too Many Requests for {url}. Backing off for {backoff} seconds...")
