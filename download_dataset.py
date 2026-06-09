@@ -1,6 +1,5 @@
 import os
 import urllib.request
-import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
@@ -24,9 +23,7 @@ MULTI_TURN_MANIFEST_URL = "https://ml-site.cdn-apple.com/datasets/pico-banana-30
 MULTI_TURN_INSTRUCTION_URL = "https://ml-site.cdn-apple.com/datasets/pico-banana-300k/nb/jsonl/multi-turn.jsonl"
 
 error_file_lock = threading.Lock()
-rate_limit_lock = threading.Lock()
-last_external_request_time = 0.0
-EXTERNAL_REQUEST_INTERVAL = 0.5 # minimum wait time between external requests
+
 
 SKIPPED_URLS = set()
 LOGGED_URLS = set()
@@ -71,7 +68,7 @@ def log_error(url, error_obj):
         if code in (404, 410):
             SKIPPED_URLS.add(url)
 
-def download_file(url: str, target_file: Path, is_external: bool = False, pbar_bytes=None):
+def download_file(url: str, target_file: Path, pbar_bytes=None):
     if target_file.exists():
         return
         
@@ -82,15 +79,6 @@ def download_file(url: str, target_file: Path, is_external: bool = False, pbar_b
     attempt = 0
     non_429_failures = 0
     while non_429_failures < MAX_RETRIES:
-        if is_external:
-            with rate_limit_lock:
-                global last_external_request_time
-                now = time.time()
-                elapsed = now - last_external_request_time
-                if elapsed < EXTERNAL_REQUEST_INTERVAL:
-                    time.sleep(EXTERNAL_REQUEST_INTERVAL - elapsed)
-                last_external_request_time = time.time()
-
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=10) as response, open(tmp_file, 'wb') as out_file:
@@ -142,30 +130,18 @@ def download_file(url: str, target_file: Path, is_external: bool = False, pbar_b
                 time.sleep(1)
 
 
-def download_image(item, pbar_bytes=None):
-    url, is_external = item
+def download_image(url, pbar_bytes=None):
     if not url:
         return
 
     parsed_url = urllib.parse.urlparse(url)
-    
-    if is_external:
-        # https://farm8.staticflickr.com/2915/14573719235_6cfb811e3c_o.jpg
-        # host: farm8.staticflickr.com, path: /2915/14573719235_6cfb811e3c_o.jpg
-        host_name = parsed_url.netloc
-        path_name = parsed_url.path.strip('/') # 2915/14573719235_6cfb811e3c_o.jpg
-        
-        target_file = IMAGES_BASE_PATH / host_name / path_name
-        target_dir = target_file.parent
-        target_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        if HOST_NAME and parsed_url.netloc != HOST_NAME:
-            url = urllib.parse.urlunparse(parsed_url._replace(netloc=HOST_NAME))
-    
-        filename = url.split('/')[-1]
-        target_file = TARGET_PATH / filename
+    if HOST_NAME and parsed_url.netloc != HOST_NAME:
+        url = urllib.parse.urlunparse(parsed_url._replace(netloc=HOST_NAME))
 
-    download_file(url, target_file, is_external, pbar_bytes)
+    filename = url.split('/')[-1]
+    target_file = TARGET_PATH / filename
+
+    download_file(url, target_file, pbar_bytes)
 
 def main():
     for path in [IDX_PATH, TARGET_PATH]:
@@ -180,49 +156,20 @@ def main():
         if target_file.exists():
             continue
         print(f"Downloading {filename}...")
-        download_file(url, target_file, is_external=False)
+        download_file(url, target_file)
 
     def iter_urls():
-        # yield internal manifest URLs
         with open(RESOURCE_FILE, "r") as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    yield (line, False)
-                    
-        # yield external URLs from jsonl
-        external_urls = set()
-        with open(JSONL_FILE, "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                content = json.loads(line)
-                for file_obj in content.get("files", []):
-                    url = file_obj.get("url", "")
-                    if url.startswith("http://") or url.startswith("https://"):
-                        if url not in external_urls:
-                            external_urls.add(url)
-                            yield (url, True)
+                    yield line
 
     print(f"Downloading to: {IMAGES_BASE_PATH}")
     
     def get_total_items() -> int:
-        count = 0
         with open(RESOURCE_FILE, "r") as f:
-            count += sum(1 for line in f if line.strip())
-            
-        external_urls = set()
-        with open(JSONL_FILE, "r") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                content = json.loads(line)
-                for file_obj in content.get("files", []):
-                    url = file_obj.get("url", "")
-                    if url.startswith("http://") or url.startswith("https://"):
-                        external_urls.add(url)
-        count += len(external_urls)
-        return count
+            return sum(1 for line in f if line.strip())
             
     total = get_total_items()
     

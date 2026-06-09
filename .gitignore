@@ -12,5 +12,6 @@ wheels/
 # Dataset files
 images/
 manifest/
-error.jsonl
+*.jsonl
 distribution.png
+.DS_Store
